@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Real-time Stock Ticker</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #0b1220;
+      --accent: #06b6d4;
+      --good: #10b981;
+      --bad: #ef4444;
+      color-scheme: dark;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 20px;
+      font-family: Inter, system-ui, sans-serif;
+      background: linear-gradient(180deg, #071124 0%, #0b1220 100%);
+      color: #e6eef8;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      min-height: 90vh;
+    }
+
+    .app {
+      width: 820px;
+      max-width: calc(100% - 40px);
+      background: rgba(255,255,255,0.03);
+      border-radius: 12px;
+      padding: 18px;
+      box-shadow: 0 8px 30px rgba(2,6,23,0.6);
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      gap: 18px;
+    }
+
+    .panel {
+      background: rgba(255,255,255,0.02);
+      padding: 14px;
+      border-radius: 10px;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 18px;
+      color: #dbeafe;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      color: #9fb0c8;
+      margin-bottom: 6px;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.06);
+      background: rgba(255,255,255,0.02);
+      color: inherit;
+      margin-bottom: 8px;
+    }
+
+    button {
+      background: linear-gradient(90deg,var(--accent), #3b82f6);
+      border: none;
+      padding: 9px 12px;
+      border-radius: 8px;
+      color: #021018;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .ticker-list {
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .ticker-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.05);
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .price { font-size: 18px; }
+    .meta { font-size: 12px; color: #9fb0c8; font-weight: 500; }
+
+    .chart-wrap { padding: 14px; }
+    #chart {
+      width: 100%;
+      height: 300px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.03);
+      display: block;
+    }
+
+    .hint {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #9fb0c8;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="panel">
+      <h2>Real-time Stock Ticker</h2>
+
+      <label for="apiKey">Finnhub API Key</label>
+      <input id="apiKey" type="text" placeholder="Enter your FINNHUB_API_KEY" />
+
+      <label for="symbol">Stock Symbol</label>
+      <input id="symbol" type="text" placeholder="e.g. AAPL" value="AAPL" />
+
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <button id="connectBtn">Connect</button>
+        <button id="disconnectBtn" disabled>Disconnect</button>
+        <button id="clearBtn">Clear</button>
+      </div>
+
+      <div class="hint">⚠ Use your own API key from Finnhub.io for live data.</div>
+
+      <div class="ticker-list" id="list"></div>
+    </div>
+
+    <div class="panel chart-wrap">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <div class="meta">Live price for</div>
+          <div id="symbolTitle" style="font-size:20px;font-weight:800;">AAPL</div>
+        </div>
+        <div style="text-align:right;">
+          <div id="price" style="font-size:22px;font-weight:800;">—</div>
+          <div id="change" class="meta">—</div>
+        </div>
+      </div>
+      <canvas id="chart"></canvas>
+      <div class="hint">Never expose API keys in public apps; use backend proxy in production.</div>
+    </div>
+  </div>
+
+  <script>
+    const connectBtn = document.getElementById('connectBtn');
+    const disconnectBtn = document.getElementById('disconnectBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const apiKeyInput = document.getElementById('apiKey');
+    const symbolInput = document.getElementById('symbol');
+    const listEl = document.getElementById('list');
+    const symbolTitle = document.getElementById('symbolTitle');
+    const priceEl = document.getElementById('price');
+    const changeEl = document.getElementById('change');
+    const canvas = document.getElementById('chart');
+    const ctx = canvas.getContext('2d');
+
+    let ws = null;
+    let history = [];
+    const HISTORY_MAX = 80;
+
+    function resizeCanvas() {
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      drawChart();
+    }
+    window.addEventListener('resize', resizeCanvas);
+
+    function drawChart() {
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      ctx.clearRect(0, 0, w, h);
+
+      if (history.length === 0) {
+        ctx.fillStyle = '#9fb0c8';
+        ctx.font = '14px Inter, Arial';
+        ctx.fillText('No data yet — connect to a symbol', 12, 20);
+        return;
+      }
+
+      const prices = history.map(p => p.price);
+      const minP = Math.min(...prices);
+      const maxP = Math.max(...prices);
+
+      ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+      for (let i = 0; i < 4; i++) {
+        const y = (h / 4) * i;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
+
+      ctx.beginPath();
+      prices.forEach((p, i) => {
+        const x = (w - 20) * (i / (prices.length - 1 || 1)) + 10;
+        const y = h - 10 - ((p - minP) / (maxP - minP || 1)) * (h - 30);
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      });
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = 'rgba(6,182,212,0.9)';
+      ctx.stroke();
+
+      const last = prices.at(-1);
+      ctx.fillStyle = '#e6eef8';
+      ctx.fillText("Last: ${last.toFixed(2)}, 10, 20");
+    }
+
+    function addListEntry(symbol, price, time) {
+      const item = document.createElement('div');
+      item.className = 'ticker-item';
+      item.innerHTML = `
+        <div>
+          <div class="meta">${symbol}</div>
+          <div class="meta">${new Date(time).toLocaleTimeString()}</div>
+        </div>
+        <div class="price">${price.toFixed(2)}</div>
+      `;
+      listEl.prepend(item);
+      while (listEl.children.length > 20) listEl.removeChild(listEl.lastChild);
+    }
+
+    function updateLatest(price) {
+      const prev = history.length > 1 ? history.at(-2).price : price;
+      const diff = price - prev;
+      const pct = prev ? (diff / prev) * 100 : 0;
+      priceEl.textContent = price.toFixed(2);
+      changeEl.textContent = `${diff >= 0 ? '+' : ''}${diff.toFixed(2)} (${pct.toFixed(2)}%)`;
+      changeEl.style.color = diff >= 0 ? 'var(--good)' : 'var(--bad)';
+    }
+
+    function pushHistory(price) {
+      history.push({ price, t: Date.now() });
+      if (history.length > HISTORY_MAX) history.shift();
+      drawChart();
+    }
+
+    function connectFinnhub(apiKey, symbol) {
+      if (ws) ws.close();
+      ws = new WebSocket("wss://ws.finnhub.io?token=${encodeURIComponent(apiKey)}");
+
+      ws.addEventListener('open', () => {
+        connectBtn.disabled = true;
+        disconnectBtn.disabled = false;
+        symbolTitle.textContent = symbol.toUpperCase();
+        ws.send(JSON.stringify({ type: 'subscribe', symbol: symbol.toUpperCase() }));
+      });
+
+      ws.addEventListener('message', evt => {
+        try {
+          const msg = JSON.parse(evt.data);
+          if (msg.type === 'trade' && msg.data) {
+            msg.data.forEach(tr => {
+              const price = tr.p;
+              addListEntry(tr.s, price, tr.t);
+              pushHistory(price);
+              updateLatest(price);
+            });
+          }
+        } catch (e) {
+          console.error('Message error', e);
+        }
+      });
+
+      ws.addEventListener('close', () => {
+        connectBtn.disabled = false;
+        disconnectBtn.disabled = true;
+      });
+    }
+
+    connectBtn.addEventListener('click', () => {
+      const key = apiKeyInput.value.trim();
+      const symbol = symbolInput.value.trim();
+      if (!key) return alert('Enter your Finnhub API key');
+      if (!symbol) return alert('Enter a stock symbol (e.g., AAPL)');
+      listEl.innerHTML = '';
+      history = [];
+      connectFinnhub(key, symbol);
+    });
+
+    disconnectBtn.addEventListener('click', () => {
+      if (ws) ws.close();
+    });
+
+    clearBtn.addEventListener('click', () => {
+      history = [];
+      listEl.innerHTML = '';
+      drawChart();
+    });
+
+    resizeCanvas();
+  </script>
+</body>
+</html>
